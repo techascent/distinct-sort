@@ -18,24 +18,24 @@
 (def data (hamf/vec (lznc/repeatedly 1000000 (fn [] {:name (str "some-name-" (rand-int 10000)) :supply (rand-int 50000)}))))
 (def ds (dataset/->dataset data))
 
-(defn via-xforms []
+(defn xforms []
   (xforms/transjuxt [(comp (map :name) (distinct) (xforms/sort) (xforms/into []))
                      (comp (map :supply) (distinct) (xforms/sort) (xforms/into []))]
                     data))
 
-(defn via-reduce-kv []
+(defn reduce-kv []
   (-> (reduce (fn [eax item]
                     (reduce-kv #(update %1 %2 conj %3) eax item))
                   {} data)
           (update-vals (comp vec sort set))))
 
 
-(defn via-dataset []
+(defn dataset []
   [(-> ds :name set sort vec)
    (-> ds :supply set sort vec)])
 
 
-(defn via-hamf []
+(defn hamf-lznc []
   [(->> data (lznc/map :name) hamf/java-hashset hamf/sort)
    (->> data (lznc/map :supply) hamf/java-hashset hamf/sort)])
 
@@ -47,17 +47,17 @@
      (.addAll data))))
 
 
-(defn via-hamf-treeset []
+(defn treeset []
   [(->> data (lznc/map :name) treeset)
    (->> data (lznc/map :supply) treeset)])
 
 
-(defn via-hamf-sort []
+(defn hamf-sort []
   [(->> data (lznc/map :name) hamf/sort)
    (->> data (lznc/map :supply) hamf/sort)])
 
 
-(defn via-hamf-ds []
+(defn hamf-dataset []
   [(->> ds :name hamf/java-hashset hamf/sort)
    (->> ds :supply hamf/java-hashset hamf/sort)])
 
@@ -83,7 +83,7 @@
   ()
   @(hamf-rf/preduce make-hashset-distinct hamf-rf/consumer-accumulator hamf-rf/reducible-merge data))
 
-(defn via-hamf-all-out
+(defn parallel-distinct
   []
   [(->> ds :name hashset-distinct-parallel hamf/sort)
    (->> ds :supply hashset-distinct-parallel hamf/sort)])
@@ -119,7 +119,7 @@
                       hamf-rf/reducible-merge data)))
 
 
-(defn via-hamf-all-out-concurrent
+(defn concurrent-hashset
   []
   [(->> ds :name hashset-distinct-concurrent-parallel hamf/sort)
    (->> ds :supply hashset-distinct-concurrent-parallel hamf/sort)])
@@ -144,13 +144,13 @@
   (let [hs (concurrent-hashset)]
     (hamf-rf/consumer-preducer #(MapConcurrentHashsetDistinct. k hs (hamf/object-array-list)))))
 
-(defn via-hamf-singlepass
+(defn singlepass-concurrent-hashset
   []
   (hamf-rf/preduce-reducers {:name (map-hashset-distinct-reducer :name)
                              :supply (map-hashset-distinct-reducer :supply)}
                             data))
 
-(defn ds-singlepass-rows
+(defn ds-rows-singlepass-concurrent-hashset
   []
   (hamf-rf/preduce-reducers {:name (map-hashset-distinct-reducer :name)
                              :supply (map-hashset-distinct-reducer :supply)}
@@ -178,7 +178,7 @@
     (hamf-rf/long-consumer-reducer #(ColHashsetDistinct. col s (hamf/object-array-list)))))
 
 
-(defn ds-singlepass-cols
+(defn ds-cols-singlepass
   []
   (hamf-rf/preduce-reducers {:name (col-hashset-reducer :name)
                              :supply (col-hashset-reducer :supply)}
@@ -207,7 +207,7 @@
       (col-hashset-reducer cname))))
 
 
-(defn ds-typed-singlepass-cols
+(defn ds-cols-singlepass-typed
   []
   (hamf-rf/preduce-reducers {:name (col-typed-hashset-reducer :name)
                              :supply (col-typed-hashset-reducer :supply)}
@@ -242,7 +242,7 @@
            (time
             (load-duckdb-data)))))
 
-(defn via-duckdb
+(defn duckdb
   []
   @duckdb-table*
   [(duckdb/sql->dataset @duckdb-conn* "select distinct name from _unnamed order by name")
@@ -254,7 +254,7 @@
           ]))
 
 
-(defn via-duckdb-prepared
+(defn duckdb-prepared
   []
   (mapv (fn [arg] (arg)) @prepared-statement*))
 
@@ -262,31 +262,33 @@
 
   (do
     (println "xforms")
-    (crit/quick-bench (via-xforms)) ;; 770ms
+    (crit/quick-bench (xforms)) ;; 770ms
     (println "reduce-kv")
-    (crit/quick-bench (via-reduce-kv)) ;; 676ms
+    (crit/quick-bench (reduce-kv)) ;; 676ms
     (println "dataset")
-    (crit/quick-bench (via-dataset)) ;; 385ms
+    (crit/quick-bench (dataset)) ;; 385ms
     (println "hamf")
-    (crit/quick-bench (via-hamf)) ;; 327ms
+    (crit/quick-bench (hamf)) ;; 327ms
     (println "hamf-treeset")
-    (crit/quick-bench (via-hamf-treeset)) ;; 327ms
+    (crit/quick-bench (hamf-treeset)) ;; 327ms
     (println "hamf-sort")
-    (crit/quick-bench (via-hamf-sort)) ;; 327ms
+    (crit/quick-bench (hamf-sort)) ;; 327ms
     (println "hamf-ds")
-    (crit/quick-bench (via-hamf-ds)) ;; 211 ms
+    (crit/quick-bench (hamf-ds)) ;; 211 ms
     (println "hamf-all-out")
-    (crit/quick-bench (via-hamf-all-out)) ;;95ms
+    (crit/quick-bench (hamf-all-out)) ;;95ms
     (println "hamf-all-out-concurrent")
-    (crit/quick-bench (via-hamf-all-out-concurrent)) ;;95ms
+    (crit/quick-bench (hamf-all-out-concurrent)) ;;95ms
     (println "hamf-concurrent-singelpass")
-    (crit/quick-bench (via-hamf-singlepass))
+    (crit/quick-bench (hamf-singlepass))
+    (println "ds-singlepass")
+    (crit/quick-bench (hamf-singlepass))
     (if @duckdb-conn*
       (do
         (println "duckdb")
-        (crit/quick-bench (via-duckdb)) ;; 60ms
+        (crit/quick-bench (duckdb)) ;; 60ms
         (println "duckdb-prepared")
-        (crit/quick-bench (via-duckdb-prepared)) ;; 32ms
+        (crit/quick-bench (duckdb-prepared)) ;; 32ms
         )
       (println "duckdb failed to load"))
     )
@@ -299,7 +301,7 @@
   ;;hamf-ds - 50ms
   ;;hamf-all-out - 27ms
   ;;hamf-all-out-concurrent - 25ms
-  ;;duckdb - load times eventually get down to 197ms, actual task via-duckdb - 13.3ms (!!)
+  ;;duckdb - load times eventually get down to 197ms, actual task duckdb - 13.3ms (!!)
 
 
   ;;desktop timings
