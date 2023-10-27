@@ -1,0 +1,10 @@
+#!/bin/bash
+
+set -e
+
+
+scripts/uberjar
+
+
+java -version
+java -XX:+UseParallelGC -jar target/distinct-sort.jar

@@ -14,7 +14,8 @@
             [tmducken.duckdb :as duckdb])
   (:import [java.util TreeSet Set List]
            [org.roaringbitmap RoaringBitmap]
-           [tech.v3.datatype Buffer]))
+           [tech.v3.datatype Buffer])
+  (:gen-class))
 
 (def data (hamf/vec (lznc/repeatedly 1000000 (fn [] {:name (str "some-name-" (rand-int 10000)) :supply (rand-int 50000)}))))
 
@@ -349,6 +350,10 @@
   (-> (ds/->dataset (map bench-it profile-fns))
       (ds/select-columns [:name :mean-ms :variance-ms])
       (ds/sort-by-column :mean-ms)))
+
+(defn -main
+  [& args]
+  (println (run-full-benchmark)))
 
 (comment
 
