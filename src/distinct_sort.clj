@@ -10,6 +10,7 @@
             [ham-fisted.api :as hamf]
             [ham-fisted.reduce :as hamf-rf]
             [ham-fisted.protocols :as hamf-proto]
+            [ham-fisted.set :as hamf-set]
             [criterium.core :as crit]
             [tmducken.duckdb :as duckdb])
   (:import [java.util TreeSet Set List]
@@ -17,7 +18,14 @@
            [tech.v3.datatype Buffer])
   (:gen-class))
 
-(def data (hamf/vec (lznc/repeatedly 1000000 (fn [] {:name (str "some-name-" (rand-int 10000)) :supply (rand-int 50000)}))))
+;;hamf vector as the parallelization pathway faster.
+(defn make-dataset
+  []
+  (->> (lznc/repeatedly 1000000 (fn [] {:name (str "some-name-" (rand-int 10000))
+                                        :supply (rand-int 50000)}))
+       (hamf/vec)))
+
+(def data (make-dataset))
 
 (defn load-dataset
   []
@@ -25,6 +33,11 @@
 
 
 (def ds (load-dataset))
+
+;; distinct-sort> schema
+;; [{:categorical? true, :name :name, :datatype :string, :n-elems 1000000}
+;;  {:name :supply, :datatype :int32, :n-elems 1000000}]
+(def schema (mapv meta (vals ds)))
 
 
 (defn xforms []
@@ -43,10 +56,17 @@
   [(-> ds :name set sort vec)
    (-> ds :supply set sort vec)])
 
+(defn hamf-sort
+  [data]
+  ;;Passing in nil for the comparator tells hamf to explicitly avoid
+  ;;using the default clojure comparator.  This makes the sort more fragile
+  ;;but a bit faster specifically in the case of a stream of integers.
+  (hamf/sort nil data))
+
 
 (defn hamf-lznc []
-  [(->> data (lznc/map :name) hamf/java-hashset hamf/sort)
-   (->> data (lznc/map :supply) hamf/java-hashset hamf/sort)])
+  [(->> data (lznc/map :name) hamf/java-hashset hamf-sort)
+   (->> data (lznc/map :supply) hamf/java-hashset hamf-sort)])
 
 
 (defn treeset
@@ -61,202 +81,105 @@
    (->> data (lznc/map :supply) treeset)])
 
 
-(defn pure-hamf-sort []
-  [(->> data (lznc/map :name) (hamf/sort nil))
-   (->> data (lznc/map :supply) (hamf/sort nil))])
-
-
-(defn ds-hamf-hashset-sort []
-  [(->> ds :name hamf/java-hashset hamf/sort)
-   (->> ds :supply hamf/java-hashset hamf/sort)])
-
-
-(deftype HashsetDistinct [^java.util.Set hs ^java.util.List data]
-  java.util.function.Consumer
-  (accept [this val]
-    (when (.add hs val)
-      (.add data val)))
-  ham_fisted.Reducible
-  (reduce [this rhs]
-    (reduce hamf-rf/consumer-accumulator this @rhs))
-  clojure.lang.IDeref
-  (deref [this] data))
-
-(defn- make-hashset-distinct
-  ([]
-   (HashsetDistinct. (java.util.HashSet.) (hamf/object-array-list))))
-
-
-(defn- hashset-distinct-parallel
-  [data]
-  @(hamf-rf/preduce make-hashset-distinct hamf-rf/consumer-accumulator hamf-rf/reducible-merge data))
-
-(defn parallel-distinct
+(defn via-hamf-sort
+  "Out of curiosity, how does a pure sort of the data compare?"
   []
-  [(->> ds :name hashset-distinct-parallel hamf/sort)
-   (->> ds :supply hashset-distinct-parallel hamf/sort)])
+  [(->> data (lznc/map :name) hamf-sort)
+   (->> data (lznc/map :supply) hamf-sort)])
 
 
-(defn hamf-hashset-union
+(defn ds-java-hashset-sort []
+  [(->> ds :name hamf/java-hashset hamf-sort)
+   (->> ds :supply hamf/java-hashset hamf-sort)])
+
+(defn set-add!
+  [^Set s v] (.add s v) s)
+
+
+(defn ds-parallel-hashset-union
   []
-  (let [rf (fn [data] (->> (hamf-rf/preduce hamf/mut-set #(do (.add ^Set %1 %2) %1) hamf/union data)
-                           (hamf/sort nil)))]
+  (let [rf (fn [data] (->> (hamf-rf/preduce hamf/mut-set set-add! hamf/union data)
+                           (hamf-sort)))]
+    [(rf (ds :name))
+     (rf (ds :supply))]))
+
+(defn take-left
+  "Used as a passthrough merge-fn when both sides are equal."
+  [l r] l)
+
+
+(defn ds-parallel-concurrent-hashset
+  []
+  (let [rf (fn [data]
+             (let [s (hamf-set/java-concurrent-hashset)]
+               (->> (hamf-rf/preduce (constantly s) set-add! take-left data)
+                    (hamf-sort))))]
     [(rf (ds :name))
      (rf (ds :supply))]))
 
 
-(deftype ConcurrentHashsetDistinct [^java.util.Set hs ^java.util.List data]
-  java.util.function.Consumer
-  (accept [this val]
-    (when (.add hs val)
-      (.add data val)))
-  ham_fisted.Reducible
-  (reduce [this rhs]
-    (.addAll data @rhs)
-    this)
-  clojure.lang.IDeref
-  (deref [this] data))
-
-
-(defn make-concurrent-hashset-distinct
-  [set]
-  (ConcurrentHashsetDistinct. set (hamf/object-array-list)))
-
-
-(defn concurrent-hashset
-  []
-  (java.util.concurrent.ConcurrentHashMap/newKeySet))
-
-(defn- hashset-distinct-concurrent-parallel
-  [data]
-  (let [set (concurrent-hashset)]
-    @(hamf-rf/preduce #(make-concurrent-hashset-distinct set)
-                      hamf-rf/consumer-accumulator
-                      hamf-rf/reducible-merge data)))
-
-
-(defn ds-concurrent-hashset-distinct
-  []
-  [(->> ds :name hashset-distinct-concurrent-parallel hamf/sort)
-   (->> ds :supply hashset-distinct-concurrent-parallel hamf/sort)])
-
-
-(deftype MapConcurrentHashsetDistinct [k ^java.util.Set hs ^java.util.List data]
-  java.util.function.Consumer
-  (accept [this val]
-    (let [vv (get val k)]
-      (when (.add hs vv)
-        (.add data vv)))
-    ham_fisted.Reducible)
-  ham_fisted.Reducible
-  (reduce [this rhs]
-    (.addAll data (.-data ^MapConcurrentHashsetDistinct rhs))
-    this)
-  clojure.lang.IDeref
-  (deref [this] (hamf/sort data)))
-
-(defn map-hashset-distinct-reducer
-  [k]
-  (let [hs (concurrent-hashset)]
-    (hamf-rf/consumer-preducer #(MapConcurrentHashsetDistinct. k hs (hamf/object-array-list)))))
-
 (defn map-singlepass-concurrent-hashset
   []
-  (hamf-rf/preduce-reducers {:name (map-hashset-distinct-reducer :name)
-                             :supply (map-hashset-distinct-reducer :supply)}
-                            data))
-
-
-(defn map-singlepass-hamf-union
-  []
-  (let [reducer-fn (fn [k]
-                     (hamf-rf/parallel-reducer hamf/mut-set
-                                               (fn [acc vm]
-                                                 (.add ^Set acc (get vm k))
-                                                 acc)
-                                               hamf/union
-                                               hamf/sort))]
-    (hamf-rf/preduce-reducers {:name (reducer-fn :name)
-                               :supply (reducer-fn :supply)}
+  (let [make-reducer (fn [k]
+                       (let [s (hamf-set/java-concurrent-hashset)]
+                         (hamf-rf/parallel-reducer
+                          (constantly s)
+                          #(set-add! %1 (get %2 k))
+                          take-left
+                          hamf-sort)))]
+    (hamf-rf/preduce-reducers [(make-reducer :name)
+                               (make-reducer :supply)]
                               data)))
 
 
-(deftype ColHashsetDistinct [^Buffer col ^Set hs]
-  java.util.function.LongConsumer
-  (accept [this idx]
-    (.add hs (.readObject col idx)))
-  ham_fisted.Reducible
-  (reduce [this rhs]
-    (hamf/union hs (.-hs ^ColHashsetDistinct rhs))
-    this)
-  clojure.lang.IDeref
-  (deref [this] (hamf/sort hs)))
-
-
-(defn col-hashset-reducer
-  [col]
-  (let [col (dtype/->buffer col)]
-    (hamf-rf/long-consumer-reducer #(ColHashsetDistinct. col (hamf/mut-set)))))
-
-
-(defn ds-cols-singlepass
+(defn map-singlepass-hashset-union
   []
-  (hamf-rf/preduce-reducers {:name (col-hashset-reducer (ds :name))
-                             :supply (col-hashset-reducer (ds :supply))}
-                            (hamf/range (ds/row-count ds))))
+  (let [make-reducer (fn [k]
+                       (hamf-rf/parallel-reducer
+                        hamf/mut-set
+                        #(set-add! %1 (get %2 k))
+                        hamf/union
+                        hamf-sort))]
+    (hamf-rf/preduce-reducers [(make-reducer :name)
+                               (make-reducer :supply)]
+                              data)))
 
-
-(deftype ColCustomHashsetDistinct [^Buffer col ^Set hs]
-  java.util.function.Consumer
-  (accept [this rng]
-    (let [sidx (long (rng 0))
-          eidx (long (rng 1))]
-      (.addAll hs (.subBuffer col (unchecked-int sidx) (unchecked-int eidx)))))
-  ham_fisted.Reducible
-  (reduce [this rhs]
-    (hamf/union hs (.-hs ^ColCustomHashsetDistinct rhs))
-    this)
-  clojure.lang.IDeref
-  (deref [this] (hamf/sort nil hs)))
-
-
-(deftype BitmapCustomHashsetDistinct [^Buffer col ^RoaringBitmap hs]
-  java.util.function.Consumer
-  (accept [this rng]
-    (let [sidx (long (rng 0))
-          eidx (long (rng 1))]
-      (.add hs (dtype/->int-array (.subBuffer col sidx eidx)))))
-  ham_fisted.Reducible
-  (reduce [this rhs]
-    (.or hs (.-hs ^BitmapCustomHashsetDistinct rhs))
-    this)
-  clojure.lang.IDeref
-  (deref [this] (bitmap/->random-access hs)))
 
 
 (defn ds-cols-custom-singlepass
   []
-  (let [rfn (fn [col]
-              (hamf-rf/parallel-reducer
-               (if (identical? :int32 (dtype/elemwise-datatype col))
-                 #(BitmapCustomHashsetDistinct. (dtype/->buffer col) (bitmap/->bitmap))
-                 #(ColCustomHashsetDistinct. (dtype/->buffer col) (hamf/mut-set)))
-               hamf-rf/consumer-accumulator
-               hamf-rf/reducible-merge
-               deref))
-        r (hamf-rf/compose-reducers {:name (rfn (ds :name))
-                                     :supply (rfn (ds :supply))})
+  (let [make-reducer (fn [col]
+                       (let [col (dtype/->buffer col)]
+                         (if (= :int32 (dtype/elemwise-datatype col))
+                           (hamf-rf/parallel-reducer
+                            bitmap/->bitmap
+                            (fn [acc rng]
+                              (let [sidx (long (rng 0))
+                                    eidx (long (rng 1))]
+                                (.add ^RoaringBitmap acc (dtype/->int-array (.subBuffer col sidx eidx)))
+                                acc))
+                            #(do (.or ^RoaringBitmap %1 ^RoaringBitmap %2) %1)
+                            bitmap/->random-access)
+                           (hamf-rf/parallel-reducer
+                            hamf/mut-set
+                            (fn [acc rng]
+                              (let [sidx (long (rng 0))
+                                    eidx (long (rng 1))]
+                                (.addAll ^Set acc (.subBuffer col sidx eidx))
+                                acc))
+                            hamf/union
+                            hamf-sort))))
+        r (hamf-rf/compose-reducers {:name (make-reducer (ds :name))
+                                     :supply (make-reducer (ds :supply))})
         rinit (hamf-proto/->init-val-fn r)
         rfn (hamf-proto/->rfn r)
-        merge-fn (hamf-proto/->merge-fn r)
-        n-rows (ds/row-count ds)]
-    (hamf-proto/finalize
-     r
-     (->> (hamf/pgroups
-           n-rows
-           (fn [^long sidx ^long eidx]
-             (rfn (rinit) [sidx eidx])))
-          (reduce merge-fn)))))
+        merge-fn (hamf-proto/->merge-fn r)]
+    (->> (hamf/pgroups
+          (ds/row-count ds)
+          (fn [^long sidx ^long eidx]
+            (rfn (rinit) [sidx eidx])))
+         (reduce merge-fn)
+         (hamf-proto/finalize r))))
 
 
 
@@ -330,16 +253,17 @@
           #'ds-set-sort
           #'hamf-lznc
           #'via-treeset
-          #'pure-hamf-sort
-          #'ds-hamf-hashset-sort
-          #'parallel-distinct
-          #'ds-concurrent-hashset-distinct
+          #'via-hamf-sort
+          #'ds-java-hashset-sort
+          #'ds-parallel-hashset-union
+          #'ds-parallel-concurrent-hashset
           #'map-singlepass-concurrent-hashset
+          #'map-singlepass-hashset-union
           #'ds-cols-custom-singlepass]
          (when @duckdb-conn*
            [#'load-duckdb-data
             #'duckdb-prepared]))]
-    (-> (ds/->dataset (map bench-it profile-fns))
+    (-> (ds/->dataset (mapv bench-it profile-fns))
         (ds/select-columns [:name :mean-ms :variance-ms])
         (ds/sort-by-column :mean-ms))))
 
