@@ -2,6 +2,7 @@
  :deps {
         criterium/criterium {:mvn/version "0.4.5"}
         net.cgrand/xforms {:mvn/version "0.19.5"}
-        techascent/tech.ml.dataset {:mvn/version "7.017"}
+        techascent/tech.ml.dataset {:mvn/version "7.019"}
         com.techascent/tmducken {:mvn/version "0.8.1-12"}
+        com.clojure-goes-fast/clj-java-decompiler {:mvn/version "0.3.4"}
         }}

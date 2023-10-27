@@ -9,6 +9,7 @@
             [ham-fisted.lazy-noncaching :as lznc]
             [ham-fisted.api :as hamf]
             [ham-fisted.reduce :as hamf-rf]
+            [ham-fisted.protocols :as hamf-proto]
             [criterium.core :as crit]
             [tmducken.duckdb :as duckdb])
   (:import [java.util TreeSet Set List]
@@ -60,8 +61,8 @@
 
 
 (defn pure-hamf-sort []
-  [(->> data (lznc/map :name) hamf/sort)
-   (->> data (lznc/map :supply) hamf/sort)])
+  [(->> data (lznc/map :name) (hamf/sort nil))
+   (->> data (lznc/map :supply) (hamf/sort nil))])
 
 
 (defn ds-hamf-hashset-sort []
@@ -97,8 +98,8 @@
 
 (defn hamf-hashset-union
   []
-  (let [rf (fn [data] (-> (hamf-rf/preduce hamf/mut-set #(do (.add ^Set %1 %2) %1) hamf/union data)
-                          (hamf/sort)))]
+  (let [rf (fn [data] (->> (hamf-rf/preduce hamf/mut-set #(do (.add ^Set %1 %2) %1) hamf/union data)
+                           (hamf/sort nil)))]
     [(rf (ds :name))
      (rf (ds :supply))]))
 
@@ -204,32 +205,57 @@
                             (hamf/range (ds/row-count ds))))
 
 
-(deftype BitmapHashsetDistinct [^Buffer col ^RoaringBitmap hs]
-  java.util.function.LongConsumer
-  (accept [this idx]
-    (let [vv (.readLong col idx)]
-      (.add hs (unchecked-int vv))))
+(deftype ColCustomHashsetDistinct [^Buffer col ^Set hs]
+  java.util.function.Consumer
+  (accept [this rng]
+    (let [sidx (long (rng 0))
+          eidx (long (rng 1))]
+      (.addAll hs (.subBuffer col (unchecked-int sidx) (unchecked-int eidx)))))
   ham_fisted.Reducible
   (reduce [this rhs]
-    (.or hs (.-hs ^BitmapHashsetDistinct rhs))
+    (hamf/union hs (.-hs ^ColCustomHashsetDistinct rhs))
+    this)
+  clojure.lang.IDeref
+  (deref [this] (hamf/sort nil hs)))
+
+
+(deftype BitmapCustomHashsetDistinct [^Buffer col ^RoaringBitmap hs]
+  java.util.function.Consumer
+  (accept [this rng]
+    (let [sidx (long (rng 0))
+          eidx (long (rng 1))]
+      (.add hs (dtype/->int-array (.subBuffer col sidx eidx)))))
+  ham_fisted.Reducible
+  (reduce [this rhs]
+    (.or hs (.-hs ^BitmapCustomHashsetDistinct rhs))
     this)
   clojure.lang.IDeref
   (deref [this] (bitmap/->random-access hs)))
 
 
-(defn col-typed-hashset-reducer
-  [col]
-  (let [col (dtype/->buffer col)]
-    (if (identical? :int32 (dtype/elemwise-datatype col))
-      (hamf-rf/long-consumer-reducer #(BitmapHashsetDistinct. col (bitmap/->bitmap)))
-      (col-hashset-reducer col))))
-
-
-(defn ds-cols-singlepass-typed
+(defn ds-cols-custom-singlepass
   []
-  (hamf-rf/preduce-reducers {:name (col-typed-hashset-reducer :name)
-                             :supply (col-typed-hashset-reducer :supply)}
-                            (hamf/range (ds/row-count ds))))
+  (let [rfn (fn [col]
+              (hamf-rf/parallel-reducer
+               (if (identical? :int32 (dtype/elemwise-datatype col))
+                 #(BitmapCustomHashsetDistinct. (dtype/->buffer col) (bitmap/->bitmap))
+                 #(ColCustomHashsetDistinct. (dtype/->buffer col) (hamf/mut-set)))
+               hamf-rf/consumer-accumulator
+               hamf-rf/reducible-merge
+               deref))
+        r (hamf-rf/compose-reducers {:name (rfn (ds :name))
+                                     :supply (rfn (ds :supply))})
+        rinit (hamf-proto/->init-val-fn r)
+        rfn (hamf-proto/->rfn r)
+        merge-fn (hamf-proto/->merge-fn r)
+        n-rows (ds/row-count ds)]
+    (hamf-proto/finalize
+     r
+     (->> (hamf/pgroups
+           n-rows
+           (fn [^long sidx ^long eidx]
+             (rfn (rinit) [sidx eidx])))
+          (reduce merge-fn)))))
 
 
 
@@ -311,8 +337,7 @@
     #'parallel-distinct
     #'ds-concurrent-hashset-distinct
     #'map-singlepass-concurrent-hashset
-    #'ds-cols-singlepass
-    #'ds-cols-singlepass-typed]
+    #'ds-cols-custom-singlepass]
    (when @duckdb-conn*
      [#'load-duckdb-data
       #'duckdb-prepared])))
