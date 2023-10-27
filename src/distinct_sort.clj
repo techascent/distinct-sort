@@ -25,14 +25,23 @@
                                         :supply (rand-int 50000)}))
        (hamf/vec)))
 
-(def data (make-dataset))
+(def vec-data (make-dataset))
 
 (defn load-dataset
   []
-  (ds/->dataset data))
+  (ds/->dataset vec-data))
 
 
-(def ds (load-dataset))
+(defn parallel-load-dataset
+  []
+  (->> (hamf/pgroups
+        (count vec-data)
+        (fn [^long sidx ^long eidx]
+          (ds/->dataset (hamf/subvec vec-data sidx eidx))))
+       (apply ds/concat)))
+
+
+(def ds (parallel-load-dataset))
 
 ;; distinct-sort> schema
 ;; [{:categorical? true, :name :name, :datatype :string, :n-elems 1000000}
@@ -43,12 +52,12 @@
 (defn xforms []
   (xforms/transjuxt [(comp (map :name) (distinct) (xforms/sort) (xforms/into []))
                      (comp (map :supply) (distinct) (xforms/sort) (xforms/into []))]
-                    data))
+                    vec-data))
 
 (defn via-reduce-kv []
   (-> (reduce (fn [eax item]
                     (reduce-kv #(update %1 %2 conj %3) eax item))
-                  {} data)
+                  {} vec-data)
           (update-vals (comp vec sort set))))
 
 
@@ -65,27 +74,27 @@
 
 
 (defn hamf-lznc []
-  [(->> data (lznc/map :name) hamf/java-hashset hamf-sort)
-   (->> data (lznc/map :supply) hamf/java-hashset hamf-sort)])
+  [(->> vec-data (lznc/map :name) hamf/java-hashset hamf-sort)
+   (->> vec-data (lznc/map :supply) hamf/java-hashset hamf-sort)])
 
 
 (defn treeset
   ([] (TreeSet.))
-  ([data]
+  ([vec-data]
    (doto (TreeSet.)
-     (.addAll data))))
+     (.addAll vec-data))))
 
 
 (defn via-treeset []
-  [(->> data (lznc/map :name) treeset)
-   (->> data (lznc/map :supply) treeset)])
+  [(->> vec-data (lznc/map :name) treeset)
+   (->> vec-data (lznc/map :supply) treeset)])
 
 
 (defn via-hamf-sort
   "Out of curiosity, how does a pure sort of the data compare?"
   []
-  [(->> data (lznc/map :name) hamf-sort)
-   (->> data (lznc/map :supply) hamf-sort)])
+  [(->> vec-data (lznc/map :name) hamf-sort)
+   (->> vec-data (lznc/map :supply) hamf-sort)])
 
 
 (defn ds-java-hashset-sort []
@@ -129,7 +138,7 @@
                           hamf-sort)))]
     (hamf-rf/preduce-reducers [(make-reducer :name)
                                (make-reducer :supply)]
-                              data)))
+                              vec-data)))
 
 
 (defn map-singlepass-hashset-union
@@ -142,7 +151,7 @@
                         hamf-sort))]
     (hamf-rf/preduce-reducers [(make-reducer :name)
                                (make-reducer :supply)]
-                              data)))
+                              vec-data)))
 
 
 
@@ -249,6 +258,7 @@
         (lznc/concat
          [#'xforms
           #'load-dataset
+          #'parallel-load-dataset
           #'via-reduce-kv
           #'ds-set-sort
           #'hamf-lznc
