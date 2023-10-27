@@ -1,0 +1,17 @@
+#!/bin/bash
+
+if [ ! -e binaries ]; then
+    dist=$(uname)
+    echo "dist is $dist"
+    if [[ "$dist" == "Darwin" ]]; then
+	wget https://github.com/duckdb/duckdb/releases/download/v0.9.1/libduckdb-osx-universal.zip
+	unzip libduckdb-osx-universal.zip -d binaries
+	rm libduckdb-osx-universal.zip
+    else
+	wget https://github.com/duckdb/duckdb/releases/download/v0.9.1/libduckdb-linux-amd64.zip
+	unzip libduckdb-linux-amd64.zip -d binaries
+	rm libduckdb-linux-amd64.zip
+    fi
+fi
+
+export DUCKDB_HOME="$(pwd)/binaries"
