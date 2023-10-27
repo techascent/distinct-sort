@@ -303,12 +303,6 @@
   (mapv (fn [arg] (arg)) @prepared-statement*))
 
 
-(defn- bench-it
-  [v]
-  (println (:name (meta v)))
-  (crit/quick-bench (v)))
-
-
 (defmacro benchmark-ms
   "Benchmark an op, returning a map of :mean and :variance in ms."
   [f]
@@ -325,31 +319,29 @@
            (benchmark-ms (x)))))
 
 
-(def ^:private profile-fns
-  (lznc/concat
-   [#'xforms
-    #'load-dataset
-    #'via-reduce-kv
-    #'ds-set-sort
-    #'hamf-lznc
-    #'via-treeset
-    #'pure-hamf-sort
-    #'ds-hamf-hashset-sort
-    #'parallel-distinct
-    #'ds-concurrent-hashset-distinct
-    #'map-singlepass-concurrent-hashset
-    #'ds-cols-custom-singlepass]
-   (when @duckdb-conn*
-     [#'load-duckdb-data
-      #'duckdb-prepared])))
-
-
 (defn run-full-benchmark
   []
   (println "running full benchmark ...")
-  (-> (ds/->dataset (map bench-it profile-fns))
-      (ds/select-columns [:name :mean-ms :variance-ms])
-      (ds/sort-by-column :mean-ms)))
+  (let [profile-fns
+        (lznc/concat
+         [#'xforms
+          #'load-dataset
+          #'via-reduce-kv
+          #'ds-set-sort
+          #'hamf-lznc
+          #'via-treeset
+          #'pure-hamf-sort
+          #'ds-hamf-hashset-sort
+          #'parallel-distinct
+          #'ds-concurrent-hashset-distinct
+          #'map-singlepass-concurrent-hashset
+          #'ds-cols-custom-singlepass]
+         (when @duckdb-conn*
+           [#'load-duckdb-data
+            #'duckdb-prepared]))]
+    (-> (ds/->dataset (map bench-it profile-fns))
+        (ds/select-columns [:name :mean-ms :variance-ms])
+        (ds/sort-by-column :mean-ms))))
 
 (defn -main
   [& args]
