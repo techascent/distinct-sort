@@ -90,11 +90,16 @@
    (->> vec-data (lznc/map :supply) treeset)])
 
 
+(defn inorder-dedup
+  [data]
+  (mapv #(reduce (fn [acc v] v) nil %) (lznc/partition-by identity data)))
+
+
 (defn via-hamf-sort
-  "Out of curiosity, how does a pure sort of the data compare?"
+  "Out of curiosity, how does a pure sort of the data followed by an in-order deduplication compare?"
   []
-  [(->> vec-data (lznc/map :name) hamf-sort)
-   (->> vec-data (lznc/map :supply) hamf-sort)])
+  [(->> vec-data (lznc/map :name) hamf-sort inorder-dedup)
+   (->> vec-data (lznc/map :supply) hamf-sort inorder-dedup)])
 
 
 (defn ds-java-hashset-sort []
@@ -141,6 +146,7 @@
                               vec-data)))
 
 
+
 (defn map-singlepass-hashset-union
   []
   (let [make-reducer (fn [k]
@@ -152,6 +158,33 @@
     (hamf-rf/preduce-reducers [(make-reducer :name)
                                (make-reducer :supply)]
                               vec-data)))
+
+
+(defn range-reduce-reducers
+  [reducers n-elems]
+  (let [r (hamf-rf/compose-reducers reducers)
+        init-fn (hamf-proto/->init-val-fn r)
+        rfn (hamf-proto/->rfn r)]
+    (->> (hamf/pgroups
+          n-elems
+          (fn [^long sidx ^long eidx]
+            (rfn (init-fn) [sidx eidx])))
+         (reduce (hamf-proto/->merge-fn r))
+         (hamf-proto/finalize r))))
+
+
+(defn map-range-hashset-union
+  []
+  (let [make-reducer (fn [k]
+                       (hamf-rf/parallel-reducer
+                        hamf/mut-set
+                        #(do (.addAll ^Set %1 (lznc/map k (hamf/subvec vec-data (%2 0) (%2 1))))
+                             %1)
+                        hamf/union
+                        hamf-sort))]
+    (range-reduce-reducers [(make-reducer :name)
+                            (make-reducer :supply)]
+                           (count vec-data))))
 
 
 
@@ -177,18 +210,10 @@
                                 (.addAll ^Set acc (.subBuffer col sidx eidx))
                                 acc))
                             hamf/union
-                            hamf-sort))))
-        r (hamf-rf/compose-reducers {:name (make-reducer (ds :name))
-                                     :supply (make-reducer (ds :supply))})
-        rinit (hamf-proto/->init-val-fn r)
-        rfn (hamf-proto/->rfn r)
-        merge-fn (hamf-proto/->merge-fn r)]
-    (->> (hamf/pgroups
-          (ds/row-count ds)
-          (fn [^long sidx ^long eidx]
-            (rfn (rinit) [sidx eidx])))
-         (reduce merge-fn)
-         (hamf-proto/finalize r))))
+                            hamf-sort))))]
+    (range-reduce-reducers [(make-reducer (ds :name))
+                            (make-reducer (ds :supply))]
+                           (ds/row-count ds))))
 
 
 
