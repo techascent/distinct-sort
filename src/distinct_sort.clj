@@ -26,6 +26,7 @@
        (hamf/vec)))
 
 (def vec-data (make-dataset))
+(def obj-data (hamf/object-array-list vec-data))
 
 (defn load-dataset
   []
@@ -178,7 +179,7 @@
   (let [make-reducer (fn [k]
                        (hamf-rf/parallel-reducer
                         hamf/mut-set
-                        #(do (.addAll ^Set %1 (lznc/map k (hamf/subvec vec-data (%2 0) (%2 1))))
+                        #(do (.addAll ^Set %1 (lznc/map k (hamf/subvec obj-data (%2 0) (%2 1))))
                              %1)
                         hamf/union
                         hamf-sort))]
