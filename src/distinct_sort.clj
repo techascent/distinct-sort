@@ -207,12 +207,11 @@
                                 #(do (.or ^RoaringBitmap %1 ^RoaringBitmap %2) %1)
                                 ;;Converts bitmap back into an random access container (:uint32)
                                 bitmap/->random-access)
-                               (let [s (hamf-set/java-concurrent-hashset)]
-                                 (hamf-rf/parallel-reducer
-                                  (constantly s)
-                                  #(set-add-all! %1 (.subBuffer col (%2 0) (%2 1)))
-                                  take-left
-                                  hamf-sort)))))
+                               (hamf-rf/parallel-reducer
+                                hamf/mut-set
+                                #(set-add-all! %1 (.subBuffer col (%2 0) (%2 1)))
+                                hamf/union
+                                hamf-sort))))
                          (ds/row-count ds)))
 
 
