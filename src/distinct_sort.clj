@@ -18,18 +18,13 @@
            [tech.v3.datatype Buffer])
   (:gen-class))
 
-;;hamf vector as the parallelization pathway faster.
-(defn make-dataset
-  []
-  (->> (lznc/repeatedly 1000000 (fn [] {:name (str "some-name-" (rand-int 10000))
-                                        :supply (rand-int 50000)}))
-       (hamf/vec)))
-
-(def vec-data (make-dataset))
+(def vec-data (->> (lznc/repeatedly 1000000 (fn [] {:name (str "some-name-" (rand-int 10000))
+                                                    :supply (rand-int 50000)}))
+                   (hamf/vec)))
 (def obj-data (hamf/object-array-list vec-data))
 
 ;;Loading the dataset this way is about twice as fast as simply passing
-;;in the vector of maps and the key structure is set at the very beginning.
+;;in the vector of maps as the key structure is set at the very beginning.
 (defn load-dataset-cwise
   ([] (load-dataset-cwise vec-data))
   ([vec-data] (ds/->dataset {:name (lznc/map :name vec-data)
@@ -54,7 +49,7 @@
 
 (def target-keys (ds/column-names ds))
 
-(defn key-op [f] (mapv f target-keys))
+(defn key-op [f] (mapv f [:name :supply]))
 
 (defn xforms []
   (xforms/transjuxt (key-op (fn [k] (comp (map k) (distinct) (xforms/sort) (xforms/into []))))
@@ -229,18 +224,18 @@
 
 
 (defn load-duckdb-data
-  []
-  (try (duckdb/drop-table! @duckdb-conn* "_unnamed")
+  [conn]
+  (try (duckdb/drop-table! conn "_unnamed")
        (catch Exception e))
-  (duckdb/create-table! @duckdb-conn* ds)
-  (duckdb/insert-dataset! @duckdb-conn* ds))
+  (duckdb/create-table! conn ds)
+  (duckdb/insert-dataset! conn ds))
 
 
 (defonce duckdb-table*
   (delay (when @duckdb-conn*
            (println "loading data into duckdb")
            (time
-            (load-duckdb-data)))))
+            (load-duckdb-data @duckdb-conn*)))))
 
 (defn duckdb
   []
